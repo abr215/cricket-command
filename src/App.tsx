@@ -727,6 +727,7 @@ function AuthGate({
           {error && <p className="empty-state">{error}</p>}
 
           <button
+            id={step === 'phone' ? 'send-phone-code' : undefined}
             type="button"
             className="primary full"
             disabled={loading}

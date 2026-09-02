@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/firebase/cloudrepository.ts","./src/firebase/config.ts","./src/firebase/online.ts","./src/game/matchengine.ts","./src/game/tournamentengine.ts","./src/hooks/usestoredstate.ts"],"version":"5.8.3"}

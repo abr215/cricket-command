@@ -24,9 +24,8 @@ import {
   advanceAuctionPlayer,
   addBotTeamsToTournament,
   watchAuth,
-  beginPhoneLogin,
-  confirmPhoneLogin,
-  migrateGuestAccount,
+  registerEmailAccount,
+  loginEmailAccount,
   signOutOnline,
   type FriendInvite,
   type OnlinePlayer,
@@ -149,9 +148,8 @@ function App() {
     }
   }, [activeTournamentId])
 
-  // Starts an anonymous session immediately (so the app is usable before the
-  // manager decides), and keeps authUser in sync whenever the signed-in
-  // identity changes -- including the switch from anonymous to phone auth.
+  // Starts an anonymous session immediately so the app is usable before the
+  // manager chooses whether to create an account or continue as a guest.
   useEffect(() => {
     const unsubscribeAuth = watchAuth(user => setAuthUser(user))
     loginOnline().catch(error => console.error('Initial sign-in failed:', error))
@@ -159,8 +157,8 @@ function App() {
   }, [])
 
   // Re-syncs the manager profile and all live subscriptions whenever the
-  // authenticated uid changes. This is what makes phone login actually
-  // restore (or hand over) the club, instead of only running once at boot.
+  // authenticated uid changes. This keeps the manager profile tied to the
+  // Firebase account across devices.
   useEffect(() => {
     if (!authUser) return
     let unsubscribePlayers: (() => void) | undefined
@@ -175,8 +173,8 @@ function App() {
         // Firebase is the permanent source of truth for the manager profile.
         // localStorage is only a fast cache, so refreshing the browser -- or
         // the dev server picking a different port -- never forces the
-        // manager to create the club again, and signing in with a phone
-        // number on a new device restores the same club.
+        // manager to create the club again. Signing in with the same
+        // email account on a new device restores the same club.
         const profile = await loadPlayerProfile(authUser.uid)
         if (!cancelled && !myTeam && profile?.team?.name) {
           const restoredTeam: Team = {
@@ -371,7 +369,7 @@ function App() {
           <span className="online-dot" />
           <span>{myTeam?.name || 'New Manager'}</span>
           <small style={{ opacity: 0.6, marginRight: '4px' }}>
-            {authUser?.phoneNumber ? 'Verified' : 'Guest'}
+            {authUser?.isAnonymous ? 'Guest' : 'Account'}
           </small>
           <button
             type="button"
@@ -621,63 +619,56 @@ function App() {
 }
 
 
-/* ---------------- AUTH GATE (phone login) ---------------- */
+/* ---------------- AUTH GATE (email account) ---------------- */
 
 function AuthGate({
   guestTeam,
   onDone,
 }: {
   guestTeam: Team | null
-  onDone: (mode: 'guest' | 'phone') => void
+  onDone: (mode: 'guest' | 'account') => void
 }) {
-  const [step, setStep] = useState<'phone' | 'code'>('phone')
-  const [digits, setDigits] = useState('')
-  const [code, setCode] = useState('')
+  const [mode, setMode] = useState<'register' | 'login'>('register')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const fullPhone = `+91${digits.replace(/\D/g, '')}`
-
-  const sendCode = async () => {
-    const clean = digits.replace(/\D/g, '')
-    if (clean.length < 10) {
-      setError('Enter a valid 10-digit phone number.')
+  const submit = async () => {
+    const cleanEmail = email.trim().toLowerCase()
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setError('Enter a valid email address.')
       return
     }
-    setLoading(true)
-    setError('')
-    try {
-      await beginPhoneLogin(fullPhone)
-      setStep('code')
-    } catch (err) {
-      console.error('Phone sign-in failed:', err)
-      setError('Could not send the code. Check the number and try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const verifyCode = async () => {
-    if (code.trim().length < 6) {
-      setError('Enter the 6-digit code.')
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters.')
       return
     }
+
     setLoading(true)
     setError('')
+
     try {
-      const previousUid = getCurrentUserUid()
-      await confirmPhoneLogin(code.trim())
-      if (previousUid) {
-        try {
-          await migrateGuestAccount(previousUid, guestTeam)
-        } catch (migrationError) {
-          console.error('Guest data migration failed:', migrationError)
-        }
+      if (mode === 'register') {
+        await registerEmailAccount(cleanEmail, password, guestTeam)
+      } else {
+        await loginEmailAccount(cleanEmail, password)
       }
-      onDone('phone')
-    } catch (err) {
-      console.error('Code verification failed:', err)
-      setError('Incorrect code. Please try again.')
+      onDone('account')
+    } catch (err: any) {
+      console.error('Email authentication failed:', err)
+      const code = err?.code || ''
+      if (code === 'auth/email-already-in-use') {
+        setError('This email is already registered. Switch to Log in.')
+      } else if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+        setError('Email or password is incorrect.')
+      } else if (code === 'auth/weak-password') {
+        setError('Choose a password with at least 6 characters.')
+      } else if (code === 'auth/invalid-email') {
+        setError('Enter a valid email address.')
+      } else {
+        setError('Could not complete account setup. Please try again.')
+      }
     } finally {
       setLoading(false)
     }
@@ -688,63 +679,63 @@ function AuthGate({
       <section className="content">
         <section className="setup-card" style={{ marginTop: '18vh' }}>
           <p className="eyebrow">CRICKET COMMAND</p>
-          <h1>{step === 'phone' ? 'Sign in to save your progress' : 'Enter verification code'}</h1>
+          <h1>{mode === 'register' ? 'Create your free account' : 'Log in to your account'}</h1>
           <p>
-            {step === 'phone'
-              ? 'Your club, squads and tournaments will be tied to this number, and follow you to any device.'
-              : `We sent a 6-digit code to +91 ${digits}.`}
+            {mode === 'register'
+              ? 'Save your club, squads and tournaments and access them from any device.'
+              : 'Log in to restore your club, squads and tournaments.'}
           </p>
 
-          {step === 'phone' ? (
-            <label>
-              Phone number
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <span style={{ padding: '12px 14px', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '8px' }}>+91</span>
-                <input
-                  type="tel"
-                  placeholder="98765 43210"
-                  value={digits}
-                  maxLength={10}
-                  onChange={e => setDigits(e.target.value.replace(/\D/g, ''))}
-                  style={{ flex: 1 }}
-                />
-              </div>
-            </label>
-          ) : (
-            <label>
-              6-digit code
-              <input
-                type="text"
-                inputMode="numeric"
-                placeholder="123456"
-                value={code}
-                maxLength={6}
-                onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
-              />
-            </label>
-          )}
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '18px' }}>
+            <button
+              type="button"
+              className={mode === 'register' ? 'primary' : 'secondary'}
+              onClick={() => { setMode('register'); setError('') }}
+            >
+              Create account
+            </button>
+            <button
+              type="button"
+              className={mode === 'login' ? 'primary' : 'secondary'}
+              onClick={() => { setMode('login'); setError('') }}
+            >
+              Log in
+            </button>
+          </div>
+
+          <label>
+            Email address
+            <input
+              type="email"
+              placeholder="you@example.com"
+              value={email}
+              autoComplete={mode === 'register' ? 'email' : 'username'}
+              onChange={e => setEmail(e.target.value)}
+            />
+          </label>
+
+          <label>
+            Password
+            <input
+              type="password"
+              placeholder="At least 6 characters"
+              value={password}
+              autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+              onChange={e => setPassword(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') void submit() }}
+            />
+          </label>
 
           {error && <p className="empty-state">{error}</p>}
 
           <button
-            id={step === 'phone' ? 'send-phone-code' : undefined}
             type="button"
             className="primary full"
             disabled={loading}
-            onClick={step === 'phone' ? sendCode : verifyCode}
+            onClick={submit}
           >
-            {loading ? 'Please wait…' : step === 'phone' ? 'Send code →' : 'Verify & continue →'}
+            {loading ? 'Please wait…' : mode === 'register' ? 'Create account →' : 'Log in →'}
           </button>
-
-          {step === 'code' && (
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => { setStep('phone'); setCode(''); setError('') }}
-            >
-              ← Change number
-            </button>
-          )}
 
           <button
             type="button"
@@ -753,8 +744,6 @@ function AuthGate({
           >
             Continue as guest instead
           </button>
-
-          <div id="phone-recaptcha"></div>
         </section>
       </section>
     </main>

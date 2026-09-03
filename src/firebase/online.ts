@@ -5,10 +5,11 @@ import {
   onAuthStateChanged,
   setPersistence,
   browserLocalPersistence,
-  signInWithPhoneNumber,
-  RecaptchaVerifier,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  EmailAuthProvider,
+  linkWithCredential,
   type User,
-  type ConfirmationResult,
 } from 'firebase/auth'
 import {
   getDatabase,
@@ -149,29 +150,40 @@ export function watchAuth(callback: (user: User | null) => void) {
   return onAuthStateChanged(auth, callback)
 }
 
-let phoneConfirmation: ConfirmationResult | null = null
-let phoneRecaptcha: RecaptchaVerifier | null = null
-
-export async function beginPhoneLogin(phone: string) {
+export async function registerEmailAccount(email: string, password: string, team?: TeamData | null) {
   await setPersistence(auth, browserLocalPersistence)
-  if (phoneRecaptcha) phoneRecaptcha.clear()
-  phoneRecaptcha = new RecaptchaVerifier(auth, 'send-phone-code', {
-    size: 'invisible',
-    'expired-callback': () => {
-      phoneRecaptcha?.clear()
-      phoneRecaptcha = null
-    },
-  })
-  phoneConfirmation = await signInWithPhoneNumber(auth, phone, phoneRecaptcha)
-  return true
+  const credential = EmailAuthProvider.credential(email, password)
+  let user: User
+
+  if (auth.currentUser?.isAnonymous) {
+    const linked = await linkWithCredential(auth.currentUser, credential)
+    user = linked.user
+  } else {
+    user = (await createUserWithEmailAndPassword(auth, email, password)).user
+  }
+
+  if (team) {
+    await savePlayerProfile(team)
+  } else {
+    const existing = await loadPlayerProfile(user.uid)
+    if (!existing) {
+      await set(ref(database, `profiles/${user.uid}`), {
+        uid: user.uid,
+        playerId: createPlayerId(user.uid),
+        managerName: 'Manager',
+        team: null,
+        email: user.email || email,
+        updatedAt: serverTimestamp(),
+      })
+    }
+  }
+
+  return user
 }
 
-export async function confirmPhoneLogin(code: string) {
-  if (!phoneConfirmation) throw new Error('Request a verification code first.')
-  const result = await phoneConfirmation.confirm(code)
-  phoneConfirmation = null
-  phoneRecaptcha?.clear()
-  phoneRecaptcha = null
+export async function loginEmailAccount(email: string, password: string) {
+  await setPersistence(auth, browserLocalPersistence)
+  const result = await signInWithEmailAndPassword(auth, email, password)
   return result.user
 }
 
@@ -187,7 +199,7 @@ export async function migrateGuestAccount(previousUid: string, team?: TeamData |
     playerId: createPlayerId(currentUser.uid),
     managerName: oldProfile?.managerName || mergedTeam?.name || 'Manager',
     team: mergedTeam,
-    phoneNumber: currentUser.phoneNumber || null,
+    email: currentUser.email || null,
     updatedAt: serverTimestamp(),
   })
   const tournaments = await readOnce(`tournaments`) || {}
@@ -209,8 +221,8 @@ export async function migrateGuestAccount(previousUid: string, team?: TeamData |
   await remove(ref(database, `players/${previousUid}`))
 }
 
-export function isPhoneUser() {
-  return Boolean(auth.currentUser?.phoneNumber)
+export function isEmailUser() {
+  return Boolean(auth.currentUser?.email && !auth.currentUser?.isAnonymous)
 }
 
 export async function signOutOnline() {
@@ -225,7 +237,7 @@ export async function savePlayerProfile(data: TeamData & { managerName?: string 
     playerId: createPlayerId(user.uid),
     managerName: data.managerName || data.name,
     team: data,
-    phoneNumber: user.phoneNumber || null,
+    email: user.email || null,
     updatedAt: serverTimestamp(),
   }
   await set(ref(database, `profiles/${user.uid}`), profile)
